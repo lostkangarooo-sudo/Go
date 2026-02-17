@@ -1,40 +1,38 @@
 
 import { GoogleGenAI, Type } from "@google/genai";
 
-const ai = new GoogleGenAI({ apiKey: process.env.API_KEY || '' });
-
 const delay = (ms: number) => new Promise(res => setTimeout(res, ms));
 
-export const analyzeMarketCatalyst = async (headline: string, marketContext: string, retries = 3) => {
+export const analyzeMarketCatalyst = async (headline: string, marketContext: string, retries = 5) => {
+  const ai = new GoogleGenAI({ apiKey: process.env.API_KEY || '' });
   let lastError: any;
   
   for (let i = 0; i < retries; i++) {
     try {
       const response = await ai.models.generateContent({
         model: 'gemini-3-flash-preview',
-        contents: `Analyze the following news headline for a prediction market: "${headline}". 
-        The market context is: "${marketContext}". 
-        Provide a quantitative Bayesian update for the probability of the outcome occurring.`,
+        contents: `Analyze: "${headline}" in context of ${marketContext}.`,
         config: {
+          systemInstruction: "You are a senior quantitative analyst. Provide a quantitative Bayesian update (0.0 to 1.0) for the probability of a bullish outcome based on the news provided. Respond strictly in JSON format.",
           responseMimeType: "application/json",
           responseSchema: {
             type: Type.OBJECT,
             properties: {
               modelProbability: {
                 type: Type.NUMBER,
-                description: "Probability between 0.0 and 1.0 based on historical news reactions."
+                description: "Probability between 0.0 and 1.0."
               },
               sentimentScore: {
                 type: Type.NUMBER,
-                description: "Normalized sentiment from -1.0 to 1.0."
+                description: "Sentiment from -1.0 to 1.0."
               },
               reasoning: {
                 type: Type.STRING,
-                description: "Short explanation of the Bayesian shift."
+                description: "Brief quantitative justification."
               },
               confidence: {
                 type: Type.NUMBER,
-                description: "Confidence in this assessment (0.0 to 1.0)."
+                description: "Model confidence in this specific event analysis."
               }
             },
             required: ["modelProbability", "sentimentScore", "reasoning", "confidence"]
@@ -42,31 +40,23 @@ export const analyzeMarketCatalyst = async (headline: string, marketContext: str
         }
       });
 
-      if (!response.text) {
-        throw new Error("Empty response from Gemini");
-      }
-
+      if (!response.text) throw new Error("Empty response");
       return JSON.parse(response.text.trim());
+      
     } catch (e: any) {
       lastError = e;
-      
       const errorData = e?.error || e;
-      const code = errorData?.code || (typeof e?.message === 'string' && e.message.includes('429') ? 429 : 0);
-      const status = errorData?.status || "";
-      const message = errorData?.message || e?.message || String(e);
-
-      const isRateLimit = code === 429 || status === "RESOURCE_EXHAUSTED" || message.toLowerCase().includes('quota');
+      const code = errorData?.code || (e.message?.includes('429') ? 429 : 0);
       
-      if (isRateLimit) {
-        // Higher initial wait for quota issues
-        const waitTime = Math.pow(3, i) * 5000 + Math.random() * 2000;
-        console.warn(`Quota limited. Backing off ${Math.round(waitTime)}ms...`);
+      if (code === 429 || errorData?.status === "RESOURCE_EXHAUSTED") {
+        const waitTime = Math.pow(2.5, i) * 4000 + Math.random() * 2000;
+        console.warn(`Rate limit (429) hit. Attempt ${i + 1}/${retries}. Waiting ${Math.round(waitTime)}ms...`);
         await delay(waitTime);
         continue;
       }
       
-      if (code === 503 || status === "UNAVAILABLE") {
-        await delay(2000);
+      if (code === 503 || errorData?.status === "UNAVAILABLE") {
+        await delay(3000);
         continue;
       }
 
