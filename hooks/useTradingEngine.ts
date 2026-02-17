@@ -13,6 +13,8 @@ export const useTradingEngine = () => {
     activeStrategy: 'CONSENSUS',
     maFast: 5,
     maSlow: 20,
+    remoteNodeUrl: 'http://localhost:8000',
+    isRemoteMode: false
   });
 
   const [state, setState] = useState<BotState>({
@@ -22,6 +24,7 @@ export const useTradingEngine = () => {
     drawdown: 0,
     isLive: false,
     isThrottled: false,
+    isBackendConnected: false,
     watchlist: [
       { id: 'btc', name: 'BTCUSDT', type: 'BINANCE_TESTNET', impliedProb: 0.5, volume24h: 1.2e9, liquidity: 5e6, currentPrice: 66800, priceHistory: [], lastSignal: 'HOLD', probability: 0.51 },
       { id: 'eth', name: 'ETHUSDT', type: 'BINANCE_TESTNET', impliedProb: 0.5, volume24h: 4.5e8, liquidity: 1.2e6, currentPrice: 3380, priceHistory: [], lastSignal: 'HOLD', probability: 0.49 },
@@ -35,6 +38,54 @@ export const useTradingEngine = () => {
   const addLog = useCallback((msg: string, type: 'info'|'warn'|'success' = 'info') => {
     setLogs(prev => [{ msg, type, time: new Date().toLocaleTimeString() }, ...prev].slice(0, 50));
   }, []);
+
+  // Sync with Remote Python Backend
+  useEffect(() => {
+    if (!config.isRemoteMode) return;
+
+    const syncInterval = setInterval(async () => {
+      try {
+        const balanceRes = await fetch(`${config.remoteNodeUrl}/balance`);
+        const balanceData = await balanceRes.json();
+
+        const signalsRes = await fetch(`${config.remoteNodeUrl}/signals`);
+        const signalsData = await signalsRes.json();
+
+        const tradesRes = await fetch(`${config.remoteNodeUrl}/trades`);
+        const tradesData = await tradesRes.json();
+
+        setState(prev => ({
+          ...prev,
+          balance: balanceData.balance,
+          equity: balanceData.equity,
+          activePositions: tradesData.filter((t: any) => t.status === 'OPEN'),
+          isBackendConnected: true
+        }));
+
+        if (signalsData.length > 0) {
+          // Map backend signals to frontend format
+          const mappedSignals: TradingSignal[] = signalsData.map((s: any) => ({
+            id: s.id,
+            market: state.watchlist.find(m => m.name === s.symbol) || state.watchlist[0],
+            modelProb: s.prob,
+            divergence: Math.abs(s.prob - 0.5),
+            sentimentScore: s.signal === 'BUY' ? 1 : -1,
+            timestamp: Date.now(),
+            explanation: s.explanation,
+            recommendedSize: s.position_size,
+            confidence: 0.8,
+            strategy: config.activeStrategy
+          }));
+          setSignals(mappedSignals);
+        }
+      } catch (err) {
+        setState(prev => ({ ...prev, isBackendConnected: false }));
+        console.error("Backend Sync Error:", err);
+      }
+    }, 5000);
+
+    return () => clearInterval(syncInterval);
+  }, [config.isRemoteMode, config.remoteNodeUrl, state.watchlist]);
 
   const calculateMA = (prices: number[], period: number) => {
     if (prices.length < period) return null;
@@ -52,8 +103,9 @@ export const useTradingEngine = () => {
     return () => clearInterval(timer);
   }, [state.isThrottled]);
 
-  // Handle unrealized PnL updates and overall equity calculation
   useEffect(() => {
+    if (config.isRemoteMode) return; // Skip local simulation in remote mode
+
     const interval = setInterval(() => {
       setState(prev => {
         let unrealizedPnl = 0;
@@ -81,10 +133,21 @@ export const useTradingEngine = () => {
       });
     }, 3000);
     return () => clearInterval(interval);
-  }, []);
+  }, [config.isRemoteMode]);
 
-  const depositFunds = (amount: number) => {
+  const depositFunds = async (amount: number) => {
     if (amount <= 0) return;
+
+    if (config.isRemoteMode) {
+      try {
+        await fetch(`${config.remoteNodeUrl}/deposit?amount=${amount}`, { method: 'POST' });
+        addLog(`Sent deposit request of $${amount} to Remote Node.`, 'success');
+      } catch (err) {
+        addLog("Failed to send deposit to backend.", "warn");
+      }
+      return;
+    }
+
     setState(prev => ({
       ...prev,
       balance: prev.balance + amount,
@@ -94,6 +157,8 @@ export const useTradingEngine = () => {
   };
 
   const processMarketData = useCallback(async (marketId: string, newsHeadline: string) => {
+    if (config.isRemoteMode) return; // Backend handles data processing
+
     const throttled = Date.now() < cooldownRef.current;
 
     setState(prev => {
@@ -105,7 +170,6 @@ export const useTradingEngine = () => {
       const change = (Math.random() - 0.5) * volatility;
       const newPrice = (m.currentPrice || 0) * (1 + change);
       
-      // Update probability simulation based on trend (mirroring python: prob_up = (returns > 0).mean())
       const drift = change > 0 ? 0.02 : -0.02;
       const newProb = Math.min(0.95, Math.max(0.05, m.probability + drift + (Math.random() - 0.5) * 0.01));
       
@@ -180,7 +244,6 @@ export const useTradingEngine = () => {
       }
 
       const edge = Math.abs(analysis.modelProbability - market.impliedProb);
-      // Scaled by balance like Python position scaling
       const size = Math.max(0, (edge * config.kellyFraction * state.balance));
 
       const newSignal: TradingSignal = {
@@ -208,7 +271,25 @@ export const useTradingEngine = () => {
     }
   }, [state.balance, state.watchlist, config, addLog]);
 
-  const executeTrade = (signal: TradingSignal) => {
+  const executeTrade = async (signal: TradingSignal) => {
+    if (config.isRemoteMode) {
+      try {
+        await fetch(`${config.remoteNodeUrl}/trade`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            symbol: signal.market.name,
+            side: signal.sentimentScore > 0 ? 'BUY' : 'SELL',
+            size: signal.recommendedSize
+          })
+        });
+        addLog(`Order command dispatched to Remote Node for ${signal.market.name}.`, 'info');
+      } catch (err) {
+        addLog("Remote execution failed.", "warn");
+      }
+      return;
+    }
+
     if (state.balance < signal.recommendedSize) {
       addLog(`Execution Failed: Insufficient balance for ${signal.market.name}.`, 'warn');
       return;

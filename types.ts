@@ -55,6 +55,8 @@ export interface EngineConfig {
   activeStrategy: StrategyType;
   maFast: number;
   maSlow: number;
+  remoteNodeUrl: string;
+  isRemoteMode: boolean;
 }
 
 export interface BotState {
@@ -64,6 +66,7 @@ export interface BotState {
   drawdown: number;
   isLive: boolean;
   isThrottled: boolean;
+  isBackendConnected: boolean;
   watchlist: WatchlistMarket[];
 }
 

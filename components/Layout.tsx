@@ -5,9 +5,11 @@ interface LayoutProps {
   children: React.ReactNode;
   activeTab: string;
   setActiveTab: (tab: string) => void;
+  isRemote?: boolean;
+  isConnected?: boolean;
 }
 
-const Layout: React.FC<LayoutProps> = ({ children, activeTab, setActiveTab }) => {
+const Layout: React.FC<LayoutProps> = ({ children, activeTab, setActiveTab, isRemote, isConnected }) => {
   const tabs = [
     { id: 'dashboard', label: 'Dashboard', icon: 'fa-chart-line' },
     { id: 'signals', label: 'Signals', icon: 'fa-satellite-dish' },
@@ -45,10 +47,12 @@ const Layout: React.FC<LayoutProps> = ({ children, activeTab, setActiveTab }) =>
 
         <div className="mt-auto p-6 border-t border-slate-800">
           <div className="bg-slate-800/50 rounded-lg p-4">
-            <div className="text-xs text-slate-500 uppercase font-bold mb-2">Engine Status</div>
+            <div className="text-xs text-slate-500 uppercase font-bold mb-2">Engine Mode</div>
             <div className="flex items-center gap-2">
-              <div className="w-2 h-2 rounded-full bg-yellow-500 animate-pulse"></div>
-              <span className="text-sm font-medium text-slate-300">Binance Testnet (Active)</span>
+              <div className={`w-2 h-2 rounded-full ${isRemote ? (isConnected ? 'bg-emerald-500 animate-pulse' : 'bg-rose-500') : 'bg-yellow-500 animate-pulse'}`}></div>
+              <span className="text-sm font-medium text-slate-300">
+                {isRemote ? (isConnected ? 'Remote Node (Live)' : 'Node Disconnected') : 'Local Simulation'}
+              </span>
             </div>
           </div>
         </div>
@@ -61,11 +65,13 @@ const Layout: React.FC<LayoutProps> = ({ children, activeTab, setActiveTab }) =>
           <div className="flex items-center gap-4">
              <div className="flex items-center gap-2 bg-slate-900 border border-slate-800 px-3 py-1.5 rounded-full">
                 <span className="text-xs font-mono text-slate-400">NETWORK:</span>
-                <span className="text-xs font-mono text-yellow-500 font-bold uppercase">Binance_Testnet</span>
+                <span className={`text-xs font-mono font-bold uppercase ${isRemote ? 'text-emerald-400' : 'text-yellow-500'}`}>
+                  {isRemote ? 'Binance_Mainnet' : 'Binance_Testnet'}
+                </span>
              </div>
              <div className="flex items-center gap-2 bg-slate-900 border border-slate-800 px-3 py-1.5 rounded-full">
-                <span className="text-xs font-mono text-slate-400">API:</span>
-                <span className="text-xs font-mono text-emerald-400 uppercase">Gemini_3_Flash</span>
+                <span className="text-xs font-mono text-slate-400">ENGINE:</span>
+                <span className="text-xs font-mono text-emerald-400 uppercase">Quant_V2.5</span>
              </div>
           </div>
         </header>

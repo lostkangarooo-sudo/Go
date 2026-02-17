@@ -32,7 +32,6 @@ const App: React.FC = () => {
       { id: 'btc', headline: "Network hash rate hits record high; fundamental strength grows." }
     ];
 
-    // Low-frequency cycle (10s) to stay within free-tier API limits
     const interval = setInterval(() => {
       const evt = marketEvents[Math.floor(Math.random() * marketEvents.length)];
       processMarketData(evt.id, evt.headline);
@@ -58,7 +57,12 @@ const App: React.FC = () => {
   };
 
   return (
-    <Layout activeTab={activeTab} setActiveTab={setActiveTab}>
+    <Layout 
+      activeTab={activeTab} 
+      setActiveTab={setActiveTab} 
+      isRemote={config.isRemoteMode} 
+      isConnected={state.isBackendConnected}
+    >
       {activeTab === 'dashboard' && <Dashboard state={state} logs={logs} />}
       
       {activeTab === 'signals' && (
@@ -209,13 +213,40 @@ const App: React.FC = () => {
                 <div>
                   <h3 className="font-bold mb-6 flex items-center gap-2 text-blue-400">
                     <i className="fa-solid fa-satellite-dish"></i>
-                    Network Connectivity
+                    Network & API Node
                   </h3>
                   <div className="space-y-4">
-                    <div className="p-4 bg-slate-950 border border-slate-800 rounded-lg flex justify-between items-center group">
-                      <span className="text-xs font-bold text-slate-400 group-hover:text-slate-200 transition-colors">BINANCE_TESTNET_V3</span>
-                      <span className="text-[10px] text-emerald-400 font-bold bg-emerald-400/10 px-2 py-1 rounded border border-emerald-400/20">OPERATIONAL</span>
+                    <div className="p-4 bg-slate-950 border border-slate-800 rounded-lg space-y-3">
+                      <div className="flex justify-between items-center">
+                        <span className="text-xs font-bold text-slate-400 uppercase tracking-tighter">Remote Backend Node</span>
+                        <div className="flex items-center gap-2">
+                          <label className="relative inline-flex items-center cursor-pointer">
+                            <input 
+                              type="checkbox" 
+                              className="sr-only peer" 
+                              checked={config.isRemoteMode}
+                              onChange={(e) => setConfig({...config, isRemoteMode: e.target.checked})}
+                            />
+                            <div className="w-9 h-5 bg-slate-700 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-emerald-600"></div>
+                          </label>
+                          <span className="text-[10px] font-bold text-slate-200">{config.isRemoteMode ? 'REMOTE_ON' : 'LOCAL_ONLY'}</span>
+                        </div>
+                      </div>
+                      <input 
+                        type="text" 
+                        value={config.remoteNodeUrl}
+                        onChange={(e) => setConfig({...config, remoteNodeUrl: e.target.value})}
+                        placeholder="http://localhost:8000"
+                        className="w-full bg-slate-900 border border-slate-800 rounded px-3 py-1.5 text-[10px] font-mono text-emerald-400 focus:outline-none focus:border-emerald-500/50"
+                      />
+                      {config.isRemoteMode && !state.isBackendConnected && (
+                        <p className="text-[9px] text-rose-400 flex items-center gap-1">
+                          <i className="fa-solid fa-triangle-exclamation"></i>
+                          Connecting to Remote Node... Ensure Backend script is running.
+                        </p>
+                      )}
                     </div>
+
                     <div className={`p-4 rounded-lg border transition-all duration-500 ${state.isThrottled ? 'bg-rose-500/5 border-rose-500/20' : 'bg-slate-950 border-slate-800'}`}>
                       <div className="flex justify-between items-center mb-1">
                         <span className="text-xs font-bold text-slate-400 uppercase tracking-tighter">Gemini Alpha Quota</span>
