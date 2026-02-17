@@ -1,5 +1,5 @@
 
-export type StrategyType = 'BAYESIAN_SENTIMENT' | 'MA_CROSSOVER';
+export type StrategyType = 'BAYESIAN_SENTIMENT' | 'MA_CROSSOVER' | 'CONSENSUS';
 
 export interface Market {
   id: string;
@@ -9,6 +9,12 @@ export interface Market {
   volume24h: number;
   liquidity: number;
   currentPrice?: number;
+}
+
+export interface WatchlistMarket extends Market {
+  priceHistory: { timestamp: number; price: number }[];
+  lastSignal: 'BUY' | 'SELL' | 'HOLD';
+  probability: number;
 }
 
 export interface PricePoint {
@@ -57,6 +63,8 @@ export interface BotState {
   activePositions: Trade[];
   drawdown: number;
   isLive: boolean;
+  isThrottled: boolean;
+  watchlist: WatchlistMarket[];
 }
 
 export interface BacktestResult {

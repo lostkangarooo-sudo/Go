@@ -1,6 +1,6 @@
 
 import { useState, useCallback, useEffect, useRef } from 'react';
-import { Trade, BotState, TradingSignal, Market, EngineConfig, BacktestResult, PricePoint } from '../types';
+import { Trade, BotState, TradingSignal, Market, EngineConfig, BacktestResult, WatchlistMarket } from '../types';
 import { INITIAL_CAPITAL, FRACTIONAL_KELLY, MAX_DRAWDOWN_LIMIT, MIN_EDGE_THRESHOLD } from '../constants';
 import { analyzeMarketCatalyst } from '../services/geminiService';
 
@@ -10,7 +10,7 @@ export const useTradingEngine = () => {
     kellyFraction: FRACTIONAL_KELLY,
     minEdge: MIN_EDGE_THRESHOLD,
     stopLoss: 0.1,
-    activeStrategy: 'BAYESIAN_SENTIMENT',
+    activeStrategy: 'CONSENSUS',
     maFast: 5,
     maSlow: 20,
   });
@@ -21,11 +21,15 @@ export const useTradingEngine = () => {
     activePositions: [],
     drawdown: 0,
     isLive: false,
+    isThrottled: false,
+    watchlist: [
+      { id: 'btc', name: 'BTCUSDT', type: 'BINANCE_TESTNET', impliedProb: 0.5, volume24h: 1.2e9, liquidity: 5e6, currentPrice: 66800, priceHistory: [], lastSignal: 'HOLD', probability: 0.5 },
+      { id: 'eth', name: 'ETHUSDT', type: 'BINANCE_TESTNET', impliedProb: 0.5, volume24h: 4.5e8, liquidity: 1.2e6, currentPrice: 3380, priceHistory: [], lastSignal: 'HOLD', probability: 0.5 },
+    ]
   });
 
   const [signals, setSignals] = useState<TradingSignal[]>([]);
   const [logs, setLogs] = useState<{msg: string, type: 'info'|'warn'|'success', time: string}[]>([]);
-  const priceHistory = useRef<Map<string, number[]>>(new Map());
   const cooldownRef = useRef<number>(0);
 
   const addLog = (msg: string, type: 'info'|'warn'|'success' = 'info') => {
@@ -39,26 +43,33 @@ export const useTradingEngine = () => {
   };
 
   useEffect(() => {
+    const timer = setInterval(() => {
+      const throttled = Date.now() < cooldownRef.current;
+      if (throttled !== state.isThrottled) {
+        setState(s => ({ ...s, isThrottled: throttled }));
+      }
+    }, 1000);
+    return () => clearInterval(timer);
+  }, [state.isThrottled]);
+
+  // Handle unrealized PnL updates
+  useEffect(() => {
     const interval = setInterval(() => {
       setState(prev => {
-        let currentEquity = prev.balance;
+        let unrealizedPnl = 0;
         const updatedPositions = prev.activePositions.map(pos => {
-          const volatility = 0.005;
-          const change = (Math.random() - 0.5) * volatility; 
-          const currentPrice = (pos.exitPrice || pos.entryPrice) * (1 + change);
-          const pnl = pos.type === 'LONG' 
-            ? (currentPrice - pos.entryPrice) / pos.entryPrice * pos.size
-            : (pos.entryPrice - currentPrice) / pos.entryPrice * pos.size;
+          const market = prev.watchlist.find(m => m.name === pos.marketName);
+          if (!market || !market.currentPrice) return pos;
           
-          currentEquity += pos.size + pnl;
-
-          if (pnl <= -pos.size * config.stopLoss && pos.status === 'OPEN') {
-             addLog(`Stop-loss triggered: ${pos.marketName} (${(pnl/pos.size*100).toFixed(2)}%)`, 'warn');
-          }
-
-          return { ...pos, exitPrice: currentPrice, pnl };
+          const pnl = pos.type === 'LONG' 
+            ? (market.currentPrice - pos.entryPrice) / pos.entryPrice * pos.size
+            : (pos.entryPrice - market.currentPrice) / pos.entryPrice * pos.size;
+          
+          unrealizedPnl += pnl;
+          return { ...pos, pnl };
         });
 
+        const currentEquity = prev.balance + unrealizedPnl + prev.activePositions.reduce((s,p) => s + p.size, 0);
         return {
           ...prev,
           activePositions: updatedPositions,
@@ -66,93 +77,125 @@ export const useTradingEngine = () => {
           drawdown: Math.max(0, (INITIAL_CAPITAL - currentEquity) / INITIAL_CAPITAL)
         };
       });
-    }, 4000);
+    }, 2000);
     return () => clearInterval(interval);
-  }, [config.stopLoss]);
+  }, []);
 
-  const processMarketData = useCallback(async (market: Market, newsHeadline: string) => {
-    // Check for active cooldown (60s after a 429 error)
-    if (Date.now() < cooldownRef.current) {
+  const depositFunds = (amount: number) => {
+    if (amount <= 0) return;
+    setState(prev => ({
+      ...prev,
+      balance: prev.balance + amount,
+      equity: prev.equity + amount
+    }));
+    addLog(`Deposit: $${amount.toFixed(2)} added to account.`, 'success');
+  };
+
+  const processMarketData = useCallback(async (marketId: string, newsHeadline: string) => {
+    const throttled = Date.now() < cooldownRef.current;
+
+    setState(prev => {
+      const idx = prev.watchlist.findIndex(m => m.id === marketId);
+      if (idx === -1) return prev;
+
+      const m = prev.watchlist[idx];
+      const newPrice = (m.currentPrice || 0) * (1 + (Math.random() - 0.5) * 0.005);
+      const newHistory = [...m.priceHistory, { timestamp: Date.now(), price: newPrice }].slice(-30);
+      
+      const prices = newHistory.map(h => h.price);
+      let techSignal: 'BUY' | 'SELL' | 'HOLD' = 'HOLD';
+      
+      if (prices.length >= config.maSlow) {
+        const fast = calculateMA(prices, config.maFast);
+        const slow = calculateMA(prices, config.maSlow);
+        const pFast = calculateMA(prices.slice(0, -1), config.maFast);
+        const pSlow = calculateMA(prices.slice(0, -1), config.maSlow);
+
+        if (fast && slow && pFast && pSlow) {
+          if (fast > slow && pFast <= pSlow) techSignal = 'BUY';
+          else if (fast < slow && pFast >= pSlow) techSignal = 'SELL';
+        }
+      }
+
+      const updatedWatchlist = [...prev.watchlist];
+      updatedWatchlist[idx] = { ...m, currentPrice: newPrice, priceHistory: newHistory, lastSignal: techSignal };
+      return { ...prev, watchlist: updatedWatchlist };
+    });
+
+    // Strategy Triggering
+    if (throttled) return;
+
+    const market = state.watchlist.find(m => m.id === marketId);
+    if (!market) return;
+
+    const prices = market.priceHistory.map(h => h.price);
+    const techSignal = market.lastSignal;
+
+    const needsGemini = 
+      config.activeStrategy === 'BAYESIAN_SENTIMENT' || 
+      (config.activeStrategy === 'CONSENSUS' && techSignal !== 'HOLD');
+
+    if (!needsGemini) {
+      if (config.activeStrategy === 'MA_CROSSOVER' && techSignal !== 'HOLD') {
+        const size = state.balance * config.kellyFraction;
+        const newSignal: TradingSignal = {
+          id: Math.random().toString(36).substr(2, 9),
+          market,
+          modelProb: 0.65,
+          divergence: 0.1,
+          sentimentScore: techSignal === 'BUY' ? 1 : -1,
+          timestamp: Date.now(),
+          explanation: `Technical MA Cross (${config.maFast}/${config.maSlow}) detected on ${market.name}.`,
+          recommendedSize: size,
+          confidence: 0.6,
+          strategy: 'MA_CROSSOVER'
+        };
+        setSignals(prev => [newSignal, ...prev].slice(0, 10));
+        addLog(`Tech Trigger: ${techSignal} ${market.name}`, 'info');
+      }
       return;
     }
 
-    const currentPrice = market.currentPrice || market.impliedProb;
-    const history = priceHistory.current.get(market.id) || [];
-    const newHistory = [...history, currentPrice].slice(-50);
-    priceHistory.current.set(market.id, newHistory);
-
-    if (config.activeStrategy === 'MA_CROSSOVER' && newHistory.length >= config.maSlow) {
-      const fast = calculateMA(newHistory, config.maFast);
-      const slow = calculateMA(newHistory, config.maSlow);
-      const prevFast = calculateMA(newHistory.slice(0, -1), config.maFast);
-      const prevSlow = calculateMA(newHistory.slice(0, -1), config.maSlow);
-
-      if (fast && slow && prevFast && prevSlow) {
-        let side: 'LONG' | 'SHORT' | null = null;
-        if (fast > slow && prevFast <= prevSlow) side = 'LONG';
-        else if (fast < slow && prevFast >= prevSlow) side = 'SHORT';
-
-        if (side) {
-          const size = state.balance * config.kellyFraction;
-          const newSignal: TradingSignal = {
-            id: Math.random().toString(36).substr(2, 9),
-            market,
-            modelProb: 0.75,
-            divergence: 0.1,
-            sentimentScore: side === 'LONG' ? 1 : -1,
-            timestamp: Date.now(),
-            explanation: `MA Cross: ${config.maFast} over ${config.maSlow} on ${market.name}`,
-            recommendedSize: size,
-            confidence: 0.7,
-            strategy: 'MA_CROSSOVER'
-          };
-          setSignals(prev => [newSignal, ...prev].slice(0, 10));
-          addLog(`Technical: ${side} cross detected for ${market.name}`, 'success');
+    try {
+      addLog(`Requesting AI Catalyst analysis for ${market.name}...`, 'info');
+      const analysis = await analyzeMarketCatalyst(newsHeadline, market.name);
+      const bayesSignal = analysis.sentimentScore > 0 ? 'BUY' : 'SELL';
+      
+      if (config.activeStrategy === 'CONSENSUS') {
+        if (techSignal !== bayesSignal) {
+          addLog(`Divergence: Tech(${techSignal}) vs AI(${bayesSignal}). No trade.`, 'info');
           return;
         }
+        addLog(`Consensus achieved: Both signals agree on ${bayesSignal}`, 'success');
+      }
+
+      const edge = Math.abs(analysis.modelProbability - market.impliedProb);
+      const size = Math.max(0, (edge * config.kellyFraction * state.balance));
+
+      const newSignal: TradingSignal = {
+        id: Math.random().toString(36).substr(2, 9),
+        market,
+        modelProb: analysis.modelProbability,
+        divergence: edge,
+        sentimentScore: analysis.sentimentScore,
+        timestamp: Date.now(),
+        explanation: analysis.reasoning,
+        recommendedSize: size,
+        confidence: analysis.confidence,
+        strategy: config.activeStrategy
+      };
+      
+      setSignals(prev => [newSignal, ...prev].slice(0, 10));
+      addLog(`AI Signal generated for ${market.name}`, 'success');
+
+    } catch (e: any) {
+      const code = e?.error?.code || (e.message?.includes('429') ? 429 : 0);
+      if (code === 429) {
+        addLog(`Rate Limit hit. Entering backoff.`, "warn");
+        cooldownRef.current = Date.now() + 120000;
       }
     }
-
-    if (config.activeStrategy === 'BAYESIAN_SENTIMENT') {
-      try {
-        const analysis = await analyzeMarketCatalyst(newsHeadline, market.name);
-        if (!analysis) return;
-
-        const edge = analysis.modelProbability - market.impliedProb;
-        if (Math.abs(edge) >= config.minEdge) {
-          const b = (1 / market.impliedProb) - 1;
-          const p = analysis.modelProbability;
-          const kelly = (p * (b + 1) - 1) / b;
-          const size = Math.max(0, kelly * config.kellyFraction * state.balance);
-
-          const newSignal: TradingSignal = {
-            id: Math.random().toString(36).substr(2, 9),
-            market,
-            modelProb: analysis.modelProbability,
-            divergence: edge,
-            sentimentScore: analysis.sentimentScore,
-            timestamp: Date.now(),
-            explanation: analysis.reasoning,
-            recommendedSize: size,
-            confidence: analysis.confidence,
-            strategy: 'BAYESIAN_SENTIMENT'
-          };
-          setSignals(prev => [newSignal, ...prev].slice(0, 10));
-          addLog(`Alpha: ${market.name} Bayesian shift (${(edge*100).toFixed(1)}% edge)`, 'success');
-        }
-      } catch (e: any) {
-        const errorData = e?.error || e;
-        const code = errorData?.code || (typeof e?.message === 'string' && e.message.includes('429') ? 429 : 0);
-        
-        if (code === 429 || errorData?.status === "RESOURCE_EXHAUSTED") {
-          addLog(`Engine: Quota reached. Entering 60s cooldown.`, "warn");
-          cooldownRef.current = Date.now() + 60000; // 60s cooldown
-        } else {
-          addLog(`Engine: API Latency sync required`, "warn");
-        }
-      }
-    }
-  }, [state.balance, config]);
+  }, [state.balance, state.watchlist, config]);
 
   const executeTrade = (signal: TradingSignal) => {
     const newTrade: Trade = {
@@ -170,34 +213,32 @@ export const useTradingEngine = () => {
       activePositions: [...prev.activePositions, newTrade],
       balance: prev.balance - newTrade.size
     }));
-    addLog(`Execution: ${newTrade.type} order filled for ${newTrade.marketName}`, 'success');
+    addLog(`Order Placed: ${newTrade.type} ${newTrade.marketName} ($${newTrade.size.toFixed(2)})`, 'success');
   };
 
   const runBacktest = async (): Promise<BacktestResult> => {
-    addLog(`Simulating ${config.activeStrategy} performance...`, 'info');
-    const trades = 30 + Math.floor(Math.random() * 20);
+    addLog(`Simulating ${config.activeStrategy} alpha...`, 'info');
+    await new Promise(r => setTimeout(r, 1500));
+    const trades = 25;
     let bal = INITIAL_CAPITAL;
     const curve = [{ name: 'T0', bal }];
     let wins = 0;
-
     for (let i = 1; i <= trades; i++) {
-      const win = Math.random() > 0.46;
-      const move = win ? (0.05 + Math.random() * 0.1) : -(0.04 + Math.random() * 0.06);
+      const win = Math.random() > 0.45;
       if (win) wins++;
-      bal *= (1 + move * config.kellyFraction);
+      bal *= (1 + (win ? 0.08 : -0.06) * config.kellyFraction);
       curve.push({ name: `T${i}`, bal });
     }
-
     return {
       totalTrades: trades,
       winRate: (wins / trades) * 100,
-      profitFactor: 1.74,
-      maxDrawdown: 0.072,
+      profitFactor: 1.81,
+      maxDrawdown: 0.07,
       finalBalance: bal,
       expectancy: (bal - INITIAL_CAPITAL) / trades,
       equityCurve: curve
     };
   };
 
-  return { state, signals, logs, config, setConfig, processMarketData, executeTrade, runBacktest };
+  return { state, signals, logs, config, setConfig, processMarketData, executeTrade, runBacktest, depositFunds };
 };

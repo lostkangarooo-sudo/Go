@@ -5,7 +5,7 @@ const ai = new GoogleGenAI({ apiKey: process.env.API_KEY || '' });
 
 const delay = (ms: number) => new Promise(res => setTimeout(res, ms));
 
-export const analyzeMarketCatalyst = async (headline: string, marketContext: string, retries = 5) => {
+export const analyzeMarketCatalyst = async (headline: string, marketContext: string, retries = 3) => {
   let lastError: any;
   
   for (let i = 0; i < retries; i++) {
@@ -50,27 +50,26 @@ export const analyzeMarketCatalyst = async (headline: string, marketContext: str
     } catch (e: any) {
       lastError = e;
       
-      // Robust error detection for GenAI SDK
       const errorData = e?.error || e;
       const code = errorData?.code || (typeof e?.message === 'string' && e.message.includes('429') ? 429 : 0);
       const status = errorData?.status || "";
       const message = errorData?.message || e?.message || String(e);
 
       const isRateLimit = code === 429 || status === "RESOURCE_EXHAUSTED" || message.toLowerCase().includes('quota');
-      const isUnavailable = code === 503 || status === "UNAVAILABLE" || message.toLowerCase().includes('unavailable');
       
-      if (isRateLimit || isUnavailable) {
-        if (i < retries - 1) {
-          // Jittered Exponential Backoff
-          const waitTime = Math.pow(2, i) * 3000 + Math.random() * 2000;
-          const statusText = isRateLimit ? "Quota Exhausted (429)" : "Service Unavailable (503)";
-          console.warn(`${statusText}: ${message}. Retrying in ${Math.round(waitTime)}ms... (Attempt ${i + 1}/${retries})`);
-          await delay(waitTime);
-          continue;
-        }
+      if (isRateLimit) {
+        // Higher initial wait for quota issues
+        const waitTime = Math.pow(3, i) * 5000 + Math.random() * 2000;
+        console.warn(`Quota limited. Backing off ${Math.round(waitTime)}ms...`);
+        await delay(waitTime);
+        continue;
       }
       
-      console.error("Gemini API Error Detail:", { code, status, message });
+      if (code === 503 || status === "UNAVAILABLE") {
+        await delay(2000);
+        continue;
+      }
+
       throw e;
     }
   }
