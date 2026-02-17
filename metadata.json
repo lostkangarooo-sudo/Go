@@ -1,5 +1,5 @@
 {
   "name": "QuantSentinel: Micro-Alpha Bot",
-  "description": "A high-fidelity trading dashboard for low-risk algorithmic strategies, focusing on Polymarket arbitrage and structural inefficiencies using Bayesian probability and Gemini-powered sentiment analysis.",
+  "description": "A high-fidelity trading dashboard for low-risk algorithmic strategies, featuring Bayesian sentiment analysis and technical MA crossover logic on Binance Testnet.",
   "requestFramePermissions": []
 }

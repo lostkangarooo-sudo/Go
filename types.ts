@@ -1,12 +1,19 @@
 
+export type StrategyType = 'BAYESIAN_SENTIMENT' | 'MA_CROSSOVER';
+
 export interface Market {
   id: string;
   name: string;
-  type: 'POLYMARKET' | 'CRYPTO_ALT' | 'SPREAD';
-  impliedProb: number; // Market price (e.g. 0.65)
+  type: 'POLYMARKET' | 'CRYPTO_ALT' | 'SPREAD' | 'BINANCE_TESTNET';
+  impliedProb: number;
   volume24h: number;
   liquidity: number;
   currentPrice?: number;
+}
+
+export interface PricePoint {
+  timestamp: number;
+  price: number;
 }
 
 export interface TradingSignal {
@@ -19,6 +26,7 @@ export interface TradingSignal {
   explanation: string;
   recommendedSize: number;
   confidence: number;
+  strategy: StrategyType;
 }
 
 export interface Trade {
@@ -38,6 +46,9 @@ export interface EngineConfig {
   kellyFraction: number;
   minEdge: number;
   stopLoss: number;
+  activeStrategy: StrategyType;
+  maFast: number;
+  maSlow: number;
 }
 
 export interface BotState {
@@ -54,5 +65,6 @@ export interface BacktestResult {
   profitFactor: number;
   maxDrawdown: number;
   finalBalance: number;
+  expectancy: number;
   equityCurve: { name: string; bal: number }[];
 }

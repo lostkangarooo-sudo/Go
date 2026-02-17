@@ -47,8 +47,8 @@ const Layout: React.FC<LayoutProps> = ({ children, activeTab, setActiveTab }) =>
           <div className="bg-slate-800/50 rounded-lg p-4">
             <div className="text-xs text-slate-500 uppercase font-bold mb-2">Engine Status</div>
             <div className="flex items-center gap-2">
-              <div className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></div>
-              <span className="text-sm font-medium text-slate-300">Active (Low Latency)</span>
+              <div className="w-2 h-2 rounded-full bg-yellow-500 animate-pulse"></div>
+              <span className="text-sm font-medium text-slate-300">Binance Testnet (Active)</span>
             </div>
           </div>
         </div>
@@ -60,12 +60,13 @@ const Layout: React.FC<LayoutProps> = ({ children, activeTab, setActiveTab }) =>
           <h2 className="text-lg font-semibold capitalize">{activeTab.replace('-', ' ')}</h2>
           <div className="flex items-center gap-4">
              <div className="flex items-center gap-2 bg-slate-900 border border-slate-800 px-3 py-1.5 rounded-full">
-                <span className="text-xs font-mono text-slate-400">API:</span>
-                <span className="text-xs font-mono text-emerald-400">GEMINI_3_FLASH</span>
+                <span className="text-xs font-mono text-slate-400">NETWORK:</span>
+                <span className="text-xs font-mono text-yellow-500 font-bold uppercase">Binance_Testnet</span>
              </div>
-             <button className="bg-emerald-600 hover:bg-emerald-500 text-white px-4 py-2 rounded-lg text-sm font-semibold transition-all">
-                Force Sync
-             </button>
+             <div className="flex items-center gap-2 bg-slate-900 border border-slate-800 px-3 py-1.5 rounded-full">
+                <span className="text-xs font-mono text-slate-400">API:</span>
+                <span className="text-xs font-mono text-emerald-400 uppercase">Gemini_3_Flash</span>
+             </div>
           </div>
         </header>
         <div className="p-8">

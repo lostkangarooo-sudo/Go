@@ -49,22 +49,28 @@ export const analyzeMarketCatalyst = async (headline: string, marketContext: str
       return JSON.parse(response.text.trim());
     } catch (e: any) {
       lastError = e;
-      const errorMessage = e.message || String(e);
-      const isRateLimit = errorMessage.includes('429') || errorMessage.toLowerCase().includes('resource_exhausted');
-      const isUnavailable = errorMessage.includes('503') || errorMessage.toLowerCase().includes('unavailable');
+      
+      // Robust error detection for GenAI SDK
+      const errorData = e?.error || e;
+      const code = errorData?.code || (typeof e?.message === 'string' && e.message.includes('429') ? 429 : 0);
+      const status = errorData?.status || "";
+      const message = errorData?.message || e?.message || String(e);
+
+      const isRateLimit = code === 429 || status === "RESOURCE_EXHAUSTED" || message.toLowerCase().includes('quota');
+      const isUnavailable = code === 503 || status === "UNAVAILABLE" || message.toLowerCase().includes('unavailable');
       
       if (isRateLimit || isUnavailable) {
         if (i < retries - 1) {
-          // Exponential backoff: 2s, 4s, 8s, 16s... + jitter
-          const waitTime = Math.pow(2, i) * 2000 + Math.random() * 1000;
-          const status = isRateLimit ? "Rate limit (429)" : "Service unavailable (503)";
-          console.warn(`${status}. Retrying in ${Math.round(waitTime)}ms... (Attempt ${i + 1}/${retries})`);
+          // Jittered Exponential Backoff
+          const waitTime = Math.pow(2, i) * 3000 + Math.random() * 2000;
+          const statusText = isRateLimit ? "Quota Exhausted (429)" : "Service Unavailable (503)";
+          console.warn(`${statusText}: ${message}. Retrying in ${Math.round(waitTime)}ms... (Attempt ${i + 1}/${retries})`);
           await delay(waitTime);
           continue;
         }
       }
       
-      console.error("Gemini API Error:", e);
+      console.error("Gemini API Error Detail:", { code, status, message });
       throw e;
     }
   }

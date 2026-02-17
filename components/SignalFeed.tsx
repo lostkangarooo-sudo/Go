@@ -14,7 +14,7 @@ const SignalFeed: React.FC<SignalFeedProps> = ({ signals, onExecute }) => {
         <div className="flex flex-col items-center justify-center py-20 text-slate-500">
           <i className="fa-solid fa-satellite fa-3x mb-4 animate-pulse"></i>
           <p>Listening for structural inefficiencies...</p>
-          <p className="text-xs mt-2">Connecting to Gemini for catalyst analysis</p>
+          <p className="text-xs mt-2">Connecting to Binance Testnet & Gemini</p>
         </div>
       ) : (
         <div className="grid grid-cols-1 gap-4">
@@ -24,36 +24,40 @@ const SignalFeed: React.FC<SignalFeedProps> = ({ signals, onExecute }) => {
                 <div className="md:w-1/4 border-r border-slate-800 pr-6">
                   <div className="text-xs font-bold text-slate-500 uppercase tracking-widest mb-1">{signal.market.type}</div>
                   <h4 className="font-bold text-lg mb-2">{signal.market.name}</h4>
-                  <div className="flex gap-2">
+                  <div className="flex flex-wrap gap-2">
                     <span className="text-[10px] bg-slate-800 px-2 py-0.5 rounded text-slate-400 uppercase font-mono">
-                      Price: {signal.market.impliedProb.toFixed(2)}
+                      Entry: {signal.market.currentPrice ? signal.market.currentPrice.toFixed(2) : signal.market.impliedProb.toFixed(2)}
                     </span>
                     <span className="text-[10px] bg-emerald-500/10 px-2 py-0.5 rounded text-emerald-400 uppercase font-mono">
-                      Model: {signal.modelProb.toFixed(2)}
+                      {signal.strategy === 'MA_CROSSOVER' ? 'Technical' : `Prob: ${signal.modelProb.toFixed(2)}`}
                     </span>
                   </div>
                 </div>
 
                 <div className="flex-1">
                   <div className="flex items-center gap-2 mb-2 text-emerald-400">
-                    <i className="fa-solid fa-brain-circuit text-xs"></i>
-                    <span className="text-xs font-bold uppercase tracking-wider">Bayesian Inference Outcome</span>
+                    <i className={`fa-solid ${signal.strategy === 'MA_CROSSOVER' ? 'fa-chart-simple' : 'fa-brain-circuit'} text-xs`}></i>
+                    <span className="text-xs font-bold uppercase tracking-wider">
+                      {signal.strategy.replace('_', ' ')} Logic
+                    </span>
                   </div>
                   <p className="text-slate-300 text-sm leading-relaxed mb-4">
                     {signal.explanation}
                   </p>
                   <div className="grid grid-cols-3 gap-4">
                     <div>
-                      <div className="text-[10px] text-slate-500 uppercase font-bold">Edge</div>
-                      <div className="text-sm font-mono text-emerald-400">+{(signal.divergence * 100).toFixed(1)}%</div>
+                      <div className="text-[10px] text-slate-500 uppercase font-bold">Signal</div>
+                      <div className={`text-sm font-mono ${signal.sentimentScore > 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                        {signal.sentimentScore > 0 ? 'BUY / LONG' : 'SELL / SHORT'}
+                      </div>
                     </div>
                     <div>
                       <div className="text-[10px] text-slate-500 uppercase font-bold">Confidence</div>
                       <div className="text-sm font-mono">{(signal.confidence * 100).toFixed(0)}%</div>
                     </div>
                     <div>
-                      <div className="text-[10px] text-slate-500 uppercase font-bold">Sentiment</div>
-                      <div className="text-sm font-mono text-blue-400">{signal.sentimentScore > 0 ? 'Bullish' : 'Bearish'}</div>
+                      <div className="text-[10px] text-slate-500 uppercase font-bold">Volatility</div>
+                      <div className="text-sm font-mono text-blue-400">Medium</div>
                     </div>
                   </div>
                 </div>
@@ -63,9 +67,9 @@ const SignalFeed: React.FC<SignalFeedProps> = ({ signals, onExecute }) => {
                    <div className="text-xl font-mono font-bold text-emerald-400 mb-4">${signal.recommendedSize.toFixed(2)}</div>
                    <button 
                     onClick={() => onExecute(signal)}
-                    className="w-full bg-emerald-600 hover:bg-emerald-500 py-2 rounded font-bold text-xs transition-colors"
+                    className="w-full bg-emerald-600 hover:bg-emerald-500 py-2 rounded font-bold text-xs transition-colors shadow-lg shadow-emerald-500/10"
                    >
-                     EXECUTE TRADE
+                     EXECUTE ON TESTNET
                    </button>
                 </div>
               </div>
