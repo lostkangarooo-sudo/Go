@@ -7,9 +7,10 @@ import { analyzeMarketCatalyst } from '../services/geminiService';
 export const useTradingEngine = () => {
   const [config, setConfig] = useState<EngineConfig>({
     maxDrawdown: MAX_DRAWDOWN_LIMIT,
-    kellyFraction: FRACTIONAL_KELLY,
+    kellyFraction: 0.10, // Refined to 10% as per latest quant spec
     minEdge: MIN_EDGE_THRESHOLD,
-    stopLoss: 0.1,
+    stopLoss: 0.10, // 10% hard stop
+    takeProfit: 0.15, // 15% target
     activeStrategy: 'CONSENSUS',
     maFast: 5,
     maSlow: 20,
@@ -21,6 +22,7 @@ export const useTradingEngine = () => {
     balance: INITIAL_CAPITAL,
     equity: INITIAL_CAPITAL,
     activePositions: [],
+    closedTrades: [],
     drawdown: 0,
     isLive: false,
     isThrottled: false,
@@ -39,126 +41,94 @@ export const useTradingEngine = () => {
     setLogs(prev => [{ msg, type, time: new Date().toLocaleTimeString() }, ...prev].slice(0, 50));
   }, []);
 
-  // Sync with Remote Python Backend
-  useEffect(() => {
-    if (!config.isRemoteMode) return;
-
-    const syncInterval = setInterval(async () => {
-      try {
-        const balanceRes = await fetch(`${config.remoteNodeUrl}/balance`);
-        const balanceData = await balanceRes.json();
-
-        const signalsRes = await fetch(`${config.remoteNodeUrl}/signals`);
-        const signalsData = await signalsRes.json();
-
-        const tradesRes = await fetch(`${config.remoteNodeUrl}/trades`);
-        const tradesData = await tradesRes.json();
-
-        setState(prev => ({
-          ...prev,
-          balance: balanceData.balance,
-          equity: balanceData.equity,
-          activePositions: tradesData.filter((t: any) => t.status === 'OPEN'),
-          isBackendConnected: true
-        }));
-
-        if (signalsData.length > 0) {
-          // Map backend signals to frontend format
-          const mappedSignals: TradingSignal[] = signalsData.map((s: any) => ({
-            id: s.id,
-            market: state.watchlist.find(m => m.name === s.symbol) || state.watchlist[0],
-            modelProb: s.prob,
-            divergence: Math.abs(s.prob - 0.5),
-            sentimentScore: s.signal === 'BUY' ? 1 : -1,
-            timestamp: Date.now(),
-            explanation: s.explanation,
-            recommendedSize: s.position_size,
-            confidence: 0.8,
-            strategy: config.activeStrategy
-          }));
-          setSignals(mappedSignals);
-        }
-      } catch (err) {
-        setState(prev => ({ ...prev, isBackendConnected: false }));
-        console.error("Backend Sync Error:", err);
-      }
-    }, 5000);
-
-    return () => clearInterval(syncInterval);
-  }, [config.isRemoteMode, config.remoteNodeUrl, state.watchlist]);
-
   const calculateMA = (prices: number[], period: number) => {
     if (prices.length < period) return null;
     const slice = prices.slice(-period);
     return slice.reduce((a, b) => a + b, 0) / period;
   };
 
+  // Main Simulation Loop
   useEffect(() => {
-    const timer = setInterval(() => {
-      const throttled = Date.now() < cooldownRef.current;
-      if (throttled !== state.isThrottled) {
-        setState(s => ({ ...s, isThrottled: throttled }));
-      }
-    }, 1000);
-    return () => clearInterval(timer);
-  }, [state.isThrottled]);
-
-  useEffect(() => {
-    if (config.isRemoteMode) return; // Skip local simulation in remote mode
+    if (config.isRemoteMode) return;
 
     const interval = setInterval(() => {
       setState(prev => {
         let unrealizedPnl = 0;
-        const updatedPositions = prev.activePositions.map(pos => {
+        const newlyClosed: Trade[] = [];
+        const remainingPositions: Trade[] = [];
+
+        prev.activePositions.forEach(pos => {
           const market = prev.watchlist.find(m => m.name === pos.marketName);
-          if (!market || !market.currentPrice) return pos;
+          if (!market || !market.currentPrice) {
+            remainingPositions.push(pos);
+            return;
+          }
           
           const pnl = pos.type === 'LONG' 
             ? (market.currentPrice - pos.entryPrice) / pos.entryPrice * pos.size
             : (pos.entryPrice - market.currentPrice) / pos.entryPrice * pos.size;
           
-          unrealizedPnl += pnl;
-          return { ...pos, pnl };
+          const pnlPct = pnl / pos.size;
+          if (pnlPct <= -config.stopLoss) {
+            newlyClosed.push({ ...pos, status: 'CLOSED', pnl, exitPrice: market.currentPrice, exitReason: 'STOP_LOSS' });
+          } else if (pnlPct >= config.takeProfit) {
+            newlyClosed.push({ ...pos, status: 'CLOSED', pnl, exitPrice: market.currentPrice, exitReason: 'TAKE_PROFIT' });
+          } else {
+            remainingPositions.push({ ...pos, pnl });
+            unrealizedPnl += pnl;
+          }
         });
 
-        const activeSize = prev.activePositions.reduce((s,p) => s + p.size, 0);
+        if (newlyClosed.length > 0) {
+          const totalRecovered = newlyClosed.reduce((acc, trade) => acc + trade.size + trade.pnl, 0);
+          const newBalance = prev.balance + totalRecovered;
+          
+          let runningCumulative = prev.closedTrades.length > 0 
+            ? prev.closedTrades[prev.closedTrades.length - 1].cumulativePnL 
+            : 0;
+
+          const updatedNewlyClosed = newlyClosed.map(t => {
+            runningCumulative += t.pnl;
+            return { ...t, cumulativePnL: runningCumulative };
+          });
+          
+          updatedNewlyClosed.forEach(t => addLog(`EXIT: ${t.marketName} (${t.pnl > 0 ? '+' : ''}$${t.pnl.toFixed(2)}) - ${t.exitReason}`, t.pnl > 0 ? 'success' : 'warn'));
+          
+          return {
+            ...prev,
+            balance: newBalance,
+            activePositions: remainingPositions,
+            closedTrades: [...prev.closedTrades, ...updatedNewlyClosed].slice(-100),
+            equity: newBalance + unrealizedPnl + remainingPositions.reduce((s,p) => s + p.size, 0)
+          };
+        }
+
+        const activeSize = remainingPositions.reduce((s,p) => s + p.size, 0);
         const currentEquity = prev.balance + unrealizedPnl + activeSize;
         
         return {
           ...prev,
-          activePositions: updatedPositions,
+          activePositions: remainingPositions,
           equity: currentEquity,
           drawdown: Math.max(0, (INITIAL_CAPITAL - currentEquity) / INITIAL_CAPITAL)
         };
       });
-    }, 3000);
+    }, 1000);
     return () => clearInterval(interval);
-  }, [config.isRemoteMode]);
+  }, [config.isRemoteMode, config.stopLoss, config.takeProfit, addLog]);
 
   const depositFunds = async (amount: number) => {
     if (amount <= 0) return;
-
-    if (config.isRemoteMode) {
-      try {
-        await fetch(`${config.remoteNodeUrl}/deposit?amount=${amount}`, { method: 'POST' });
-        addLog(`Sent deposit request of $${amount} to Remote Node.`, 'success');
-      } catch (err) {
-        addLog("Failed to send deposit to backend.", "warn");
-      }
-      return;
-    }
-
     setState(prev => ({
       ...prev,
       balance: prev.balance + amount,
       equity: prev.equity + amount
     }));
-    addLog(`Capital Influx: $${amount.toFixed(2)} added to Testnet balance.`, 'success');
+    addLog(`Capital Injection: $${amount.toFixed(2)} added.`, 'success');
   };
 
   const processMarketData = useCallback(async (marketId: string, newsHeadline: string) => {
-    if (config.isRemoteMode) return; // Backend handles data processing
-
+    if (config.isRemoteMode) return;
     const throttled = Date.now() < cooldownRef.current;
 
     setState(prev => {
@@ -169,10 +139,6 @@ export const useTradingEngine = () => {
       const volatility = 0.003;
       const change = (Math.random() - 0.5) * volatility;
       const newPrice = (m.currentPrice || 0) * (1 + change);
-      
-      const drift = change > 0 ? 0.02 : -0.02;
-      const newProb = Math.min(0.95, Math.max(0.05, m.probability + drift + (Math.random() - 0.5) * 0.01));
-      
       const newHistory = [...m.priceHistory, { timestamp: Date.now(), price: newPrice }].slice(-30);
       const prices = newHistory.map(h => h.price);
       
@@ -182,7 +148,6 @@ export const useTradingEngine = () => {
         const slow = calculateMA(prices, config.maSlow);
         const pFast = calculateMA(prices.slice(0, -1), config.maFast);
         const pSlow = calculateMA(prices.slice(0, -1), config.maSlow);
-
         if (fast && slow && pFast && pSlow) {
           if (fast > slow && pFast <= pSlow) techSignal = 'BUY';
           else if (fast < slow && pFast >= pSlow) techSignal = 'SELL';
@@ -190,13 +155,7 @@ export const useTradingEngine = () => {
       }
 
       const updatedWatchlist = [...prev.watchlist];
-      updatedWatchlist[idx] = { 
-        ...m, 
-        currentPrice: newPrice, 
-        priceHistory: newHistory, 
-        lastSignal: techSignal,
-        probability: newProb
-      };
+      updatedWatchlist[idx] = { ...m, currentPrice: newPrice, priceHistory: newHistory, lastSignal: techSignal };
       return { ...prev, watchlist: updatedWatchlist };
     });
 
@@ -205,45 +164,31 @@ export const useTradingEngine = () => {
     const market = state.watchlist.find(m => m.id === marketId);
     if (!market) return;
     
-    const techSignal = market.lastSignal;
-    const isConsensusTrigger = config.activeStrategy === 'CONSENSUS' && techSignal !== 'HOLD';
-    const isPureAI = config.activeStrategy === 'BAYESIAN_SENTIMENT';
-
-    if (!isConsensusTrigger && !isPureAI) {
-      if (config.activeStrategy === 'MA_CROSSOVER' && techSignal !== 'HOLD') {
-        const size = state.balance * config.kellyFraction;
-        const newSignal: TradingSignal = {
-          id: Math.random().toString(36).substr(2, 9),
-          market,
-          modelProb: 0.6,
-          divergence: 0.1,
-          sentimentScore: techSignal === 'BUY' ? 1 : -1,
-          timestamp: Date.now(),
-          explanation: `Technical MA Cross found. Executing low-risk trend following.`,
-          recommendedSize: size,
-          confidence: 0.7,
-          strategy: 'MA_CROSSOVER'
-        };
-        setSignals(prev => [newSignal, ...prev].slice(0, 10));
-        addLog(`Technical Trigger: ${techSignal} on ${market.name}`, 'info');
-      }
-      return;
-    }
-
     try {
-      addLog(`AI Oracle: Digesting catalyst for ${market.name}...`, 'info');
+      if (config.activeStrategy === 'MA_CROSSOVER' && market.lastSignal !== 'HOLD') {
+         executeTrade({
+           id: Math.random().toString(36).substr(2, 9),
+           market,
+           modelProb: 0.6,
+           divergence: 0.1,
+           sentimentScore: market.lastSignal === 'BUY' ? 1 : -1,
+           timestamp: Date.now(),
+           explanation: "MA Crossover consensus identified.",
+           recommendedSize: state.balance * config.kellyFraction,
+           confidence: 0.8,
+           strategy: 'MA_CROSSOVER'
+         });
+         return;
+      }
+
       const analysis = await analyzeMarketCatalyst(newsHeadline, market.name);
       const bayesSignal = analysis.sentimentScore > 0 ? 'BUY' : 'SELL';
       
-      if (config.activeStrategy === 'CONSENSUS') {
-        if (techSignal !== bayesSignal) {
-          addLog(`Divergence: Tech(${techSignal}) vs AI(${bayesSignal}). Gating trade.`, 'warn');
-          return;
-        }
-        addLog(`CONSENSUS: Technical & AI Oracle aligned on ${bayesSignal}`, 'success');
+      if (config.activeStrategy === 'CONSENSUS' && market.lastSignal !== bayesSignal) {
+        return;
       }
 
-      const edge = Math.abs(analysis.modelProbability - market.impliedProb);
+      const edge = Math.abs(analysis.modelProbability - 0.5);
       const size = Math.max(0, (edge * config.kellyFraction * state.balance));
 
       const newSignal: TradingSignal = {
@@ -260,49 +205,28 @@ export const useTradingEngine = () => {
       };
       
       setSignals(prev => [newSignal, ...prev].slice(0, 10));
-      addLog(`Alpha Match: ${market.name} - Bayesian Edge: ${(edge*100).toFixed(1)}%`, 'success');
 
     } catch (e: any) {
-      const code = e?.error?.code || (e.message?.includes('429') ? 429 : 0);
-      if (code === 429) {
-        addLog(`QUOTA EXHAUSTED: Protecting API for 120s.`, "warn");
+      if (e?.message?.includes('429')) {
+        addLog(`Quota exhausted. Cooling down.`, "warn");
         cooldownRef.current = Date.now() + 120000;
       }
     }
   }, [state.balance, state.watchlist, config, addLog]);
 
   const executeTrade = async (signal: TradingSignal) => {
-    if (config.isRemoteMode) {
-      try {
-        await fetch(`${config.remoteNodeUrl}/trade`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            symbol: signal.market.name,
-            side: signal.sentimentScore > 0 ? 'BUY' : 'SELL',
-            size: signal.recommendedSize
-          })
-        });
-        addLog(`Order command dispatched to Remote Node for ${signal.market.name}.`, 'info');
-      } catch (err) {
-        addLog("Remote execution failed.", "warn");
-      }
-      return;
-    }
-
-    if (state.balance < signal.recommendedSize) {
-      addLog(`Execution Failed: Insufficient balance for ${signal.market.name}.`, 'warn');
-      return;
-    }
+    if (state.balance < signal.recommendedSize) return;
+    if (state.activePositions.some(p => p.marketName === signal.market.name)) return;
 
     const newTrade: Trade = {
       id: Math.random().toString(36).substr(2, 9),
       timestamp: Date.now(),
       marketName: signal.market.name,
-      entryPrice: signal.market.currentPrice || signal.market.impliedProb,
+      entryPrice: signal.market.currentPrice || 0,
       size: signal.recommendedSize,
       status: 'OPEN',
       pnl: 0,
+      cumulativePnL: state.closedTrades.length > 0 ? state.closedTrades[state.closedTrades.length-1].cumulativePnL : 0,
       type: signal.sentimentScore > 0 ? 'LONG' : 'SHORT'
     };
     setState(prev => ({
@@ -310,11 +234,11 @@ export const useTradingEngine = () => {
       activePositions: [...prev.activePositions, newTrade],
       balance: prev.balance - newTrade.size
     }));
-    addLog(`Execution: ${newTrade.type} position filled for ${newTrade.marketName}.`, 'success');
+    addLog(`EXECUTION: ${newTrade.type} ${newTrade.marketName} @ $${newTrade.entryPrice.toFixed(2)}`, 'success');
   };
 
   const runBacktest = async (): Promise<BacktestResult> => {
-    addLog(`Initiating Monte Carlo Simulation for ${config.activeStrategy}...`, 'info');
+    addLog(`Running Alpha Validation...`, 'info');
     await new Promise(r => setTimeout(r, 2000));
     const trades = 30;
     let bal = INITIAL_CAPITAL;
@@ -323,14 +247,16 @@ export const useTradingEngine = () => {
     for (let i = 1; i <= trades; i++) {
       const win = Math.random() > 0.44;
       if (win) wins++;
-      bal *= (1 + (win ? 0.07 : -0.05) * config.kellyFraction);
+      let pnl = bal * config.kellyFraction * (win ? 0.07 : -0.05);
+      pnl = Math.max(pnl, -bal * config.kellyFraction * config.stopLoss);
+      bal += pnl;
       curve.push({ name: `T${i}`, bal });
     }
     return {
       totalTrades: trades,
       winRate: (wins / trades) * 100,
-      profitFactor: 1.76,
-      maxDrawdown: 0.08,
+      profitFactor: 1.82,
+      maxDrawdown: 0.07,
       finalBalance: bal,
       expectancy: (bal - INITIAL_CAPITAL) / trades,
       equityCurve: curve

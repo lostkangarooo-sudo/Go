@@ -44,7 +44,11 @@ export interface Trade {
   size: number;
   status: 'OPEN' | 'CLOSED' | 'CANCELLED';
   pnl: number;
+  cumulativePnL: number;
   type: 'LONG' | 'SHORT';
+  exitReason?: string;
+  stopLossPrice?: number;
+  takeProfitPrice?: number;
 }
 
 export interface EngineConfig {
@@ -52,6 +56,7 @@ export interface EngineConfig {
   kellyFraction: number;
   minEdge: number;
   stopLoss: number;
+  takeProfit: number;
   activeStrategy: StrategyType;
   maFast: number;
   maSlow: number;
@@ -63,6 +68,7 @@ export interface BotState {
   balance: number;
   equity: number;
   activePositions: Trade[];
+  closedTrades: Trade[];
   drawdown: number;
   isLive: boolean;
   isThrottled: boolean;
